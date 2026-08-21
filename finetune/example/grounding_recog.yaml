@@ -1,0 +1,26 @@
+# Full-grounding multi-corpus config. Mix sources as "<jsonl>:<weight>,<jsonl>:<weight>".
+# Quality-preservation: conservative rank, ft_embed for new token families, corpus mixing.
+data:
+  train_data: /iopsstor/scratch/cscs/mrohania/datasets/DailyTalkGround/dailytalk_ground.jsonl:1.0,/iopsstor/scratch/cscs/mrohania/datasets/FisherGround/fisher_ground.jsonl:2.0
+  # when audio arrives, add e.g.:
+  #   ,/iopsstor/scratch/cscs/mrohania/datasets/CandorGround/candor.jsonl:3.0
+  #   ,/iopsstor/scratch/cscs/mrohania/datasets/FisherGround/fisher.jsonl:3.0
+  eval_data: ""
+  shuffle: true
+moshi_paths: {hf_repo_id: "kyutai/moshiko-pytorch-bf16"}
+full_finetuning: false
+lora: {enable: true, rank: 96, scaling: 2., ft_embed: true}   # rank 96 = conservative, preserve base quality
+first_codebook_weight_multiplier: 100.
+text_padding_weight: .5
+duration_sec: 100
+batch_size: 4
+max_steps: 600
+gradient_checkpointing: true
+optim: {lr: 3e-6, weight_decay: 0.1, pct_start: 0.05}
+seed: 0
+log_freq: 1
+do_eval: false
+do_ckpt: true
+ckpt_freq: 100
+save_adapters: true
+run_dir: /iopsstor/scratch/cscs/mrohania/moshi_runs/grounding_stageA_recog

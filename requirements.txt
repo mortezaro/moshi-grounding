@@ -1,0 +1,13 @@
+# On Alps/clariden the heavy stack (torch, cuda) comes from the uenv:
+#   uenv run --view=default pytorch/v2.9.1:v2
+# Base moshi is VENDORED in ./moshi (patched) — do NOT `pip install moshi`, it would shadow it.
+# Put ./moshi and ./finetune on PYTHONPATH instead (see README).
+# Extra pip deps (into a --system-site-packages venv):
+sphn>=0.1.4
+sentencepiece
+safetensors
+huggingface_hub
+einops
+numpy
+transformers            # for scripts/ser_dim.py (audeering SER)
+# libopus must be built from source for sphn on aarch64 (see env/moshi_env.sh LD_LIBRARY_PATH)

@@ -1,0 +1,24 @@
+# weights, data, run outputs — never in git
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+*.wav
+*.flac
+*.opus
+*.jsonl
+datasets/
+data_stereo/
+checkpoints/
+moshi_runs/
+audio_samples/
+hf_cache/
+logs/
+*.log
+# env / caches
+__pycache__/
+*.pyc
+.venv/
+moshivenv/
+*.egg-info/
+.DS_Store
