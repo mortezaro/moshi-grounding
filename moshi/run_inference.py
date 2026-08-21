@@ -51,7 +51,7 @@ def get_condition_tensors(
         else:
             import os as _os
             _tc = lm.condition_provider.text_conditions
-            _dflt = {"arousal":"mid","dominance":"mid","pitch":"mid","rate":"mid","pit":"mid"}
+            _dflt = {"arousal":"mid","dominance":"mid","pitch":"mid","rate":"mid","pit":"mid","valence":"mid"}
             _txt = {a: _os.environ.get("COND_" + a.upper(), _dflt.get(a, "neu")) for a in _tc}
             conditions = [ConditionAttributes(text=_txt, tensor={}) for _ in range(batch_size)]
             if cfg_coef != 1.0:
