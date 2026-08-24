@@ -144,8 +144,8 @@ def get_fsdp_model(
 
         model.load_state_dict(model_state_dict, strict=False, assign=True)
 
-        if args.lora.enable and not args.full_finetuning:
-            logger.info("Initializing lora layers ...")
+        if not args.full_finetuning:
+            logger.info("Initializing conditioner (+lora if enabled) ...")
             # conditioner init (new params not in base checkpoint / on meta) via to_empty
             for mod_name, module in model.named_modules():
                 if not ("condition_provider" in mod_name or "fuser" in mod_name):
@@ -161,8 +161,9 @@ def get_fsdp_model(
                     else:
                         torch.nn.init.zeros_(param)
                     param.data = param.data.to(param_dtype)
-            # initialize LoRA layers
-            initialize_lora_parameters(model, param_dtype)
+            # initialize LoRA layers (only if LoRA enabled; frozen-base conditioner-only skips this)
+            if args.lora.enable:
+                initialize_lora_parameters(model, param_dtype)
 
         assert not any(p.is_meta for p in model.parameters()), (
             "All parameters should be initialized by now"

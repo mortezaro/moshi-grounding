@@ -93,7 +93,8 @@ def _train(args: TrainArgs, exit_stack: ExitStack):
     if args.full_finetuning:
         assert not args.lora.enable, "LoRA should not be enabled for full finetuning."
     else:
-        assert args.lora.enable, "LoRA should be enabled for partial finetuning"
+        assert args.lora.enable or __import__("os").environ.get("COND_EMOTION"), \
+            "LoRA (or a conditioner via COND_EMOTION) required for partial finetuning"
 
     dist.barrier()
     run_dir.mkdir(exist_ok=True, parents=True)

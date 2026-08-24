@@ -18,6 +18,12 @@ tools/        retarget.sh — repoint hardcoded scratch paths to yours
 
 Grounding **as tokens** in the inner-monologue stream lifts offline recognition but breaks the live conversation (the model emits tags instead of speech). Grounding **as conditioning** — emotion/arousal/dominance/valence as LUT conditioner *inputs*, sum-fused into the transformer, never spoken — preserves clean speech. The validated baseline is **`S_cond_v3`** (100% DailyTalk, emotion conditioning): fluent, base voice quality preserved, emotion-aware. Making it actually *steer* affect is the open frontier; current lead is **dimensional conditioners** (not categorical emotion) + conditioner LR upweight. Full history and numbers in [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
 
+## Current best models (live-ready)
+
+After a long quality-vs-emotion investigation (full story in `docs/EXPERIMENTS.md`), the recipe that **preserves Moshi quality while adding emotion** is: **light LoRA (rank 8) + emotion conditioner, trained on Expresso** (real, clean, expressive studio speech — `scripts/build_expresso.py`). Frozen-base collapses to silence; synthetic DailyTalk and noisy Fisher each degrade quality; aggressive conditioner upweight breaks it. Judge by ear on generated audio, not teacher-forced CE.
+
+Three deliverable models (emotion strength = conditioner-LR-upweight dial): **E_long** (quality-first), **E_u8** (balanced, recommended), **E_u12** (expressive). All stay real-time full-duplex (RTF ~0.4) and conversational; emotion even modulates engagement. Serve them with `docs/SERVING.md` (`moshi.server` + SSH forward + cloudflared). Configs in `finetune/example/E_*.yaml`.
+
 ## Setup (Alps / clariden)
 
 ```bash
