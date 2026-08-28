@@ -58,12 +58,20 @@ class ServerState:
 
         self.mimi.streaming_forever(1)
         self.lm_gen.streaming_forever(1)
-        self._react_init(model_type, cfg_coef)
+        self._react_init(model_type, cfg_coef, text_tokenizer)
 
-    def _react_init(self, model_type, cfg_coef):
+    def _react_init(self, model_type, cfg_coef, text_tokenizer):
         self.model_type = model_type; self.cfg_coef = cfg_coef
+        self._spm = text_tokenizer
+        self._pad_id = getattr(self.lm_gen.lm_model, "text_padding_token_id", 3)
+        self._eos = text_tokenizer.eos_id()
+        _S = ['Hey there! What is on your mind today?', 'Hi! How has your day been so far?', 'Hello! What would you like to talk about?', 'Hey, welcome. What have you been thinking about lately?', 'Hi! I am all ears. What is going on with you today?']
+        self._starters = [text_tokenizer.encode(_s) for _s in _S]
         self._ubuf = []; self._ucount = 0; self._val_ema = 0.5; self._cur_emo = "neu"
         self._react_every = max(1, int(self.mimi.frame_rate * 1.5))
+        # turn-taking gate: keep Moshi muted until the user actually speaks
+        self._user_spoke = False; self._voice_frames = 0
+        self._gate_rms = 0.010; self._gate_need = 3
         try:
             import ser_dim as _sd
             self._proc, self._sermodel = _sd.load(self.device); self._ser_ok = True
@@ -72,6 +80,18 @@ class ServerState:
             self._ser_ok = False; log("warning", f"reactive SER load failed: {e}")
 
     def _react_buffer(self, chunk_np):
+        import numpy as _np
+        # --- turn-taking gate (runs regardless of SER) ---
+        if not self._user_spoke:
+            rms = float(_np.sqrt((chunk_np.astype(_np.float32) ** 2).mean() + 1e-9))
+            if rms > self._gate_rms:
+                self._voice_frames += 1
+                if self._voice_frames >= self._gate_need:
+                    self._user_spoke = True
+                    log("info", "REACTIVE: user started speaking -> unmuting Moshi")
+            else:
+                self._voice_frames = 0
+        # --- SER reactive perception ---
         if not getattr(self, "_ser_ok", False): return
         self._ubuf.append(chunk_np.copy()); self._ucount += 1
         maxs = int(3 * self.mimi.sample_rate); tot = sum(len(x) for x in self._ubuf)
@@ -99,6 +119,19 @@ class ServerState:
             if st is not None: st.condition_sum = ns
             log("info", f"REACTIVE: user valence {v:.2f} -> Moshi emotion '{emo}'")
 
+    def _install_greeting(self):
+        import torch as _t
+        self._user_spoke = True
+        target = random.choice(self._starters); ptr = {"i": 0}
+        def hook(tt, target=target, ptr=ptr):
+            if ptr["i"] >= len(target):
+                self.lm_gen.on_text_hook = None; return None
+            v = int(tt.reshape(-1)[0])
+            if v == self._pad_id or v == self._eos: return None
+            rep = _t.full_like(tt, target[ptr["i"]]); ptr["i"] += 1; return rep
+        self.lm_gen.on_text_hook = hook
+        log("info", "greeting-prime installed")
+
     def warmup(self):
         for chunk in range(4):
             chunk = torch.zeros(1, 1, self.frame_size, dtype=torch.float32, device=self.device)
@@ -120,6 +153,8 @@ class ServerState:
         assert tokens.shape[1] == self.lm_gen.lm_model.dep_q + 1
         main_pcm = self.mimi.decode(tokens[:, 1:])
         main_pcm = main_pcm.cpu()
+        if not getattr(self, "_user_spoke", True):
+            main_pcm = main_pcm * 0.0   # gate: stay silent until user speaks
         opus_bytes = opus_writer.append_pcm(main_pcm[0, 0].numpy())
         if len(opus_bytes) > 0:
             await ws.send_bytes(b"\x01" + opus_bytes)
@@ -203,6 +238,7 @@ class ServerState:
             opus_reader = sphn.OpusStreamReader(self.mimi.sample_rate)
             self.mimi.reset_streaming()
             self.lm_gen.reset_streaming()
+            self._install_greeting()
             # Send the handshake.
             await ws.send_bytes(b"\x00")
             await self.recv_loop(ws, opus_reader, opus_writer)
@@ -272,6 +308,16 @@ def main():
 
     log("info", "loading moshi")
     lm = checkpoint_info.get_moshi(device=args.device, dtype=args.dtype, fuse_lora=args.fuse_lora)
+    _dpo = os.environ.get("COND_DPO_LORA")
+    if _dpo:
+        import torch as _torch
+        from moshi.modules.lora import replace_all_linear_with_lora, LoRALinear
+        from safetensors.torch import load_file as _load_file
+        replace_all_linear_with_lora(lm, 16, scaling=1.0, device=args.device, dtype=args.dtype)
+        for _m in lm.modules():
+            if isinstance(_m, LoRALinear): _torch.nn.init.zeros_(_m.lora_B.weight)
+        lm.load_state_dict(_load_file(_dpo), strict=False)
+        log("info", f"loaded emotion-DPO LoRA: {_dpo}")
     log("info", "moshi loaded")
 
     state = ServerState(checkpoint_info.model_type, mimi, text_tokenizer, lm, args.cfg_coef, args.device,
