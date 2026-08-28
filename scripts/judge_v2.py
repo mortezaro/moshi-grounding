@@ -53,11 +53,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--adapter", required=True); ap.add_argument("--config", required=True)
     ap.add_argument("--label", required=True); ap.add_argument("--n_each", type=int, default=4)
+    ap.add_argument("--dpo", default="", help="optional dpo_lora.safetensors to stack on the fused fine-tune")
     a = ap.parse_args(); dev = "cuda"
     # ---------- Phase A: generate with Moshi + read affect ----------
     ci = loaders.CheckpointInfo.from_hf_repo("kyutai/moshiko-pytorch-bf16",
                                              lora_weights=a.adapter, config_path=a.config)
     lm = ci.get_moshi(device=dev, dtype=torch.bfloat16, fuse_lora=True)
+    if a.dpo:
+        from moshi.modules.lora import replace_all_linear_with_lora, LoRALinear
+        from safetensors.torch import load_file
+        replace_all_linear_with_lora(lm, 16, scaling=1.0, device=dev, dtype=torch.bfloat16)
+        for m in lm.modules():
+            if isinstance(m, LoRALinear): torch.nn.init.zeros_(m.lora_B.weight)
+        lm.load_state_dict(load_file(a.dpo), strict=False)
     mimi = ci.get_mimi(device=dev); spm = ci.get_text_tokenizer(); sr = mimi.sample_rate
     pad_id = getattr(lm, "text_padding_token_id", 3)
     proc, ser = ser_dim.load(dev)
