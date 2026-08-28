@@ -75,13 +75,20 @@ def main():
     audio_offset = lm.audio_offset; dep_q = lm.dep_q
     # add fresh trainable LoRA on top of the fused model
     replace_all_linear_with_lora(lm, a.rank, scaling=1.0, device=dev, dtype=torch.bfloat16)
+    for m in lm.modules():                      # standard LoRA: zero-init B so initial delta = 0
+        if isinstance(m, LoRALinear): torch.nn.init.zeros_(m.lora_B.weight)
     train_params = []
     for name, p in lm.named_parameters():
         p.requires_grad = ("lora_A" in name or "lora_B" in name)
         if p.requires_grad: train_params.append(p)
     print(f"trainable lora params: {sum(p.numel() for p in train_params)/1e6:.1f}M", flush=True)
     os.environ.setdefault("COND_EMOTION", "neu")
-    cond = get_condition_tensors("moshi", lm, 1, 1.0)
+    with torch.no_grad():                        # constant condition (not training conditioner) -> no graph reuse
+        cond = get_condition_tensors("moshi", lm, 1, 1.0)
+    def _detach(c):
+        if isinstance(c, dict): return {k: _detach(v) for k, v in c.items()}
+        return c.detach() if torch.is_tensor(c) else c
+    cond = _detach(cond)
 
     interleaver = Interleaver(spm, mimi.frame_rate, lm.text_padding_token_id,
                               lm.end_of_text_padding_id, lm.zero_token_id,
@@ -100,27 +107,25 @@ def main():
         return s.codes.to(dev)
 
     # ---------- in-job eval: generate with lora off (ref) vs on (policy) ----------
+    from moshi.run_inference import InferenceState
+    def _decode(tt):
+        ids = [int(t) for t in tt if int(t) >= 0 and int(t) not in (lm.text_padding_token_id, spm.eos_id())]
+        try: return spm.decode(ids).strip() if ids else ""
+        except Exception: return ""
     def evaluate():
-        lm.eval(); g = LMGen(lm, use_sampling=True, temp=0.8, temp_text=0.8, condition_tensors=cond)
-        outs = {}
-        for mode, val in (("before", 0.0), ("after", None)):
-            set_scaling(lm, val); scores = []
-            for ctx in [np.zeros(int(0.5*sr), np.float32)]*4:
-                g.reset_streaming(); mimi.reset_streaming()
-                inp = np.concatenate([ctx, np.zeros(int(6*sr), np.float32)])
-                toks = []
-                with torch.no_grad():
-                    for fr in torch.from_numpy(inp).to(dev)[None, None].split(mimi.frame_size, dim=-1):
-                        if fr.shape[-1] < mimi.frame_size: break
-                        codes = mimi.encode(fr)
-                        t = g.step(codes)
-                        if t is not None: toks.append(int(t[0, 0]))
-                txt = spm.decode([x for x in toks if x >= 0 and x not in (lm.text_padding_token_id, spm.eos_id())])
-                scores.append(score_text(txt))
-            set_scaling(lm, None); outs[mode] = float(np.mean(scores))
-        return outs
+        lm.eval(); set_scaling(lm, None)   # policy scaling (before training LoRA~=0 => baseline)
+        state = InferenceState(ci, mimi, spm, lm, 1, 1.0, dev, **ci.lm_gen_config)
+        scores = []
+        for _ in range(6):
+            state.mimi.reset_streaming(); state.lm_gen.reset_streaming()
+            inp = np.zeros(int(6.5*sr), np.float32)
+            with torch.no_grad():
+                out = state.run(torch.from_numpy(inp[None, None]).to(dev))
+            scores.append(score_text(_decode(out[0][0])))
+        lm._stop_streaming(); mimi._stop_streaming()   # exit streaming so training forward works
+        return float(np.mean(scores))
 
-    pre = evaluate(); print(f"[{a.label}] EVAL before-DPO conv={pre['before']:.3f}", flush=True)
+    pre = evaluate(); print(f"[{a.label}] EVAL before-DPO conv={pre:.3f}", flush=True)
 
     opt = torch.optim.AdamW(train_params, lr=a.lr, betas=(0.9, 0.95), weight_decay=0.0)
     lm.train(); step = 0; acc = 0; running = 0.0; opt.zero_grad()
@@ -145,14 +150,14 @@ def main():
                 if step >= a.steps: break
     post = evaluate()
     print(f"\n[{a.label}] ===== DPO RESULT beta={a.beta} lr={a.lr} stream={a.stream} rank={a.rank} =====")
-    print(f"[{a.label}] conv  before={pre['before']:.3f}  after={post['after']:.3f}  delta={post['after']-pre['before']:+.3f}", flush=True)
+    print(f"[{a.label}] conv  before={pre:.3f}  after={post:.3f}  delta={post-pre:+.3f}", flush=True)
     if a.out:
         os.makedirs(a.out, exist_ok=True)
         sd = {k: v.detach().cpu() for k, v in lm.state_dict().items() if "lora_A" in k or "lora_B" in k}
         from safetensors.torch import save_file
         save_file(sd, os.path.join(a.out, "dpo_lora.safetensors"))
         json.dump(dict(label=a.label, beta=a.beta, lr=a.lr, stream=a.stream, rank=a.rank,
-                       conv_before=pre['before'], conv_after=post['after']),
+                       conv_before=pre, conv_after=post),
                   open(os.path.join(a.out, "result.json"), "w"), indent=2)
         print(f"[{a.label}] saved new LoRA + result to {a.out}", flush=True)
 
