@@ -27,7 +27,7 @@ def affect_appropriateness(uvad, mvad):
     tv, ta = empathetic_target(uvad[2], uvad[0]); mv, ma = mvad[2], mvad[0]
     return float(np.clip(1 - np.sqrt((mv-tv)**2 + (0.6*(ma-ta))**2)/0.5, 0, 1))
 
-def emo_contexts(sr, n_each):
+def emo_contexts(sr, n_each, shard=0, nshards=1):
     fs = [f for f in sorted(glob.glob("/iopsstor/scratch/cscs/mrohania/hf_cache/datasets--Ar4ikov--iemocap_audio_text_splitted/snapshots/*/**/*.parquet", recursive=True)) if "test-" not in f]
     by = collections.defaultdict(list)
     for f in fs:
@@ -40,7 +40,7 @@ def emo_contexts(sr, n_each):
         if all(len(by[e]) >= n_each for e in ["hap","sad","ang","neu"]): break
     out = []
     for e in ["hap","sad","ang","neu"]:
-        for b, txt in by[e][:n_each]:
+        for b, txt in by[e][:n_each][shard::nshards]:   # disjoint subset for this shard
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf: tf.write(b); tp = tf.name
             try: d, s = sphn.read(tp)
             finally: os.unlink(tp)
@@ -66,6 +66,7 @@ def main():
     ap.add_argument("--adapter", required=True); ap.add_argument("--config", required=True)
     ap.add_argument("--label", required=True); ap.add_argument("--out", required=True)
     ap.add_argument("--n_each", type=int, default=12); ap.add_argument("--margin", type=float, default=0.18)
+    ap.add_argument("--shard", type=int, default=0); ap.add_argument("--nshards", type=int, default=1)
     a = ap.parse_args(); dev = "cuda"; fr = 12.5
     ci = loaders.CheckpointInfo.from_hf_repo("kyutai/moshiko-pytorch-bf16",
                                              lora_weights=a.adapter, config_path=a.config)
@@ -82,7 +83,7 @@ def main():
         try: return spm.decode(ids).strip() if ids else ""
         except Exception: return ""
     CONDS = ["hap","neu","sad"]; TEMPS = [0.7, 0.9]
-    ctxs = emo_contexts(sr, a.n_each)
+    ctxs = emo_contexts(sr, a.n_each, a.shard, a.nshards)
     contexts = []   # each: (true_e, user_audio, user_text, [candidates])
     print(f"[{a.label}] Phase A: generating candidates for {len(ctxs)} contexts", flush=True)
     for ci_, (true_e, uctx, utext) in enumerate(ctxs):
@@ -106,7 +107,7 @@ def main():
     import llm_judge
     ltok, lmodel = llm_judge.load(dev)
     ow = os.path.join(a.out, "data_stereo"); os.makedirs(ow, exist_ok=True)
-    jo = open(os.path.join(a.out, "prefs_0.jsonl"), "w"); npair = 0
+    jo = open(os.path.join(a.out, f"prefs_{a.shard}.jsonl"), "w"); npair = 0
     print(f"[{a.label}] Phase B: judging + selecting", flush=True)
     for true_e, uctx, utext, cands in contexts:
         for c in cands:
@@ -118,7 +119,7 @@ def main():
         cands.sort(key=lambda x: x["score"], reverse=True)
         best, worst = cands[0], cands[-1]
         if best["score"] - worst["score"] < a.margin: continue
-        pid = f"0_{npair}"; paths = {}
+        pid = f"{a.shard}_{npair}"; paths = {}
         for tag, c in (("c", best), ("r", worst)):
             m = c["audio"]; T = len(m)
             uch = np.zeros(T, dtype=np.float32); uch[:min(len(uctx), T)] = uctx[:T]
