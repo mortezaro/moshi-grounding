@@ -1,0 +1,9 @@
+{
+  "label": "reg40_b05s60_E_long",
+  "beta": 0.5,
+  "lr": 1e-05,
+  "stream": "text",
+  "rank": 16,
+  "conv_before": 0.9921296296296296,
+  "conv_after": 0.9975490196078431
+}

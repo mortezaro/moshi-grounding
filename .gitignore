@@ -22,3 +22,6 @@ __pycache__/
 moshivenv/
 *.egg-info/
 .DS_Store
+
+# keep the deliverable model weights tracked
+!models/**
